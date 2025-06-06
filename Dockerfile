@@ -22,5 +22,5 @@ RUN npm ci
 COPY . .
 
 # Expose port 8080 and start the application
-EXPOSE 8080
+EXPOSE 9010
 CMD [ "node", "src/server.js" ]
