@@ -117,29 +117,19 @@ class BookingController {
       const tenant = request.params.tenant;
       const user = request.user;
 
-      //TODO: Check if user is authenticated
-      const hasPermission = user.tenant === tenant;
+      const bookings = await BookingManager.getAssignedBookings(
+        tenant,
+        user.id,
+      );
 
-      if (hasPermission) {
-        const bookings = await BookingManager.getAssignedBookings(
-          tenant,
-          user.id,
-        );
-
-        if (request.query.populate === "true") {
-          await BookingController._populate(bookings);
-        }
-
-        logger.info(
-          `${tenant} -- sending ${bookings.length} assigned bookings to user ${user?.id}`,
-        );
-        response.status(200).send(bookings);
-      } else {
-        logger.warn(
-          `${tenant} -- could not get assigned bookings. User is not authenticated`,
-        );
-        response.sendStatus(403);
+      if (request.query.populate === "true") {
+        await BookingController._populate(bookings);
       }
+
+      logger.info(
+        `${tenant} -- sending ${bookings.length} assigned bookings to user ${user?.id}`,
+      );
+      response.status(200).send(bookings);
     } catch (err) {
       logger.error(err);
       response.status(500).send("Could not get assigned bookings");
@@ -173,14 +163,14 @@ class BookingController {
           tenant,
         );
 
+        let relatedBookings;
         for (let relatedBookable of relatedBookables) {
-          let relatedBookings = await BookingManager.getRelatedBookings(
+          relatedBookings = await BookingManager.getRelatedBookings(
             tenant,
             relatedBookable.id,
           );
-
-          bookings = bookings.concat(relatedBookings);
         }
+        bookings = bookings.concat(relatedBookings || []);
       }
 
       if (includeParentBookings) {
@@ -188,15 +178,14 @@ class BookingController {
           bookableId,
           tenant,
         );
-
+        let parentBookings;
         for (let parentBookable of parentBookables) {
-          let parentBookings = await BookingManager.getRelatedBookings(
+          parentBookings = await BookingManager.getRelatedBookings(
             tenant,
             parentBookable.id,
           );
-
-          bookings = bookings.concat(parentBookings);
         }
+        bookings = bookings.concat(parentBookings || []);
       }
 
       if (request.query.public === "true") {
@@ -416,7 +405,7 @@ class BookingController {
             RolePermission.MANAGE_BOOKINGS,
           )
         ) {
-          await BookingService.cancelBooking(tenant, id);
+          await BookingService.removeBooking(tenant, id);
           await WorkflowService.removeTask(tenant, id);
           logger.info(`${tenant} -- removed booking ${id} by user ${user?.id}`);
           response.sendStatus(200);
