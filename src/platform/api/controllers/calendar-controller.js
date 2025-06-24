@@ -66,7 +66,10 @@ class CalendarController {
 
       occupancies.push(
         ...uniqueBookings
-          .filter((booking) => !!booking.timeBegin && !!booking.timeEnd)
+          .filter(
+            (booking) =>
+              !!booking.timeBegin && !!booking.timeEnd && !booking.isRejected,
+          )
           .map((booking) => ({
             bookableId: bookable.id,
             title: bookable.title,
@@ -413,8 +416,8 @@ class CalendarController {
       const itemCheckoutService = new ItemCheckoutService(
         user?.id,
         tenant,
-        new Date(p.timeBegin),
-        new Date(p.timeEnd),
+        p.timeBegin,
+        p.timeEnd,
         bookableId,
         Number(amount),
         null,
