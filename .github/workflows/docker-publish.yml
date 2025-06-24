@@ -6,6 +6,9 @@ name: Docker
 # documentation.
 
 on:
+  push:
+    branches:
+      main
   release:
     types: [published]
   workflow_dispatch:
@@ -76,6 +79,15 @@ jobs:
           tags: |
             type=raw,value=${{ github.ref_name }}-${{ github.run_id }}
 
+      - name: Extract Docker metadata for push to main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: meta_push_main
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=main
+
       # Build and push Docker image with Buildx (don't push on PR)
       # https://github.com/docker/build-push-action
       - name: Build and push Docker image
@@ -84,8 +96,8 @@ jobs:
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta_release.outputs.tags || steps.meta_dispatch.outputs.tags }}
-          labels: ${{ steps.meta_release.outputs.labels || steps.meta_dispatch.outputs.labels }}
+          tags: ${{ steps.meta_release.outputs.tags || steps.meta_dispatch.outputs.tags || steps.meta_push_main.outputs.tags }}
+          labels: ${{ steps.meta_release.outputs.labels || steps.meta_dispatch.outputs.labels || steps.meta_push_main.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
