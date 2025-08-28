@@ -390,16 +390,21 @@ class HtmlEngine {
     htmlOutput += `<div class="event-location">`;
     htmlOutput += `<h5>Veranstaltungsort</h5>`;
 
-    htmlOutput += event.eventLocation.name
-      ? `<div class="name">${event.eventLocation.name || ""}</div>`
+    console.log(event.eventLocation);
+
+    htmlOutput += event.eventAddress.name
+      ? `<div class="name">${event.eventAddress.name || ""}</div>`
       : "";
-    htmlOutput += event.eventLocation.street
+    htmlOutput += event.eventAddress.street
       ? `<div class="street">${event.eventAddress.street || ""}</div>`
       : "";
-    htmlOutput += event.eventLocation.zip
+    htmlOutput += event.eventAddress.houseNumber
+      ? `<div class houseNumber>${event.eventAddress.houseNumber || ""}</div>`
+      : "";
+    htmlOutput += event.eventAddress.zip
       ? `<div class="zip">${event.eventAddress.zip || ""}</div>`
       : "";
-    htmlOutput += event.eventLocation.city
+    htmlOutput += event.eventAddress.city
       ? `<div class="city">${event.eventAddress.city || ""}</div>`
       : "";
     htmlOutput += event.eventLocation.phoneNumber
