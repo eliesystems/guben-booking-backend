@@ -1,5 +1,6 @@
 const UserManager = require("../../../commons/data-managers/user-manager");
-const { User, HookTypes } = require("../../../commons/entities/user");
+const { User } = require("../../../commons/entities/user/user");
+const { USER_HOOK_TYPES } = require("../../../commons/entities/user/userHook");
 const bunyan = require("bunyan");
 const MailController = require("../../../commons/mail-service/mail-controller");
 const SsoService = require("../../../commons/services/sso/sso-service");
@@ -77,7 +78,6 @@ class AuthenticationController {
           const user = new User({
             id: request.body.id,
             secret: undefined,
-            tenant: request.params.tenant,
             firstName: request.body.firstName,
             lastName: request.body.lastName,
             company: request.body.company,
@@ -140,28 +140,25 @@ class AuthenticationController {
     }
   }
 
-  static releaseHook(request, response, next) {
-    var hookId = request.params.hookId;
+  static async releaseHook(request, response) {
+    const hookId = request.params.hookId;
 
-    UserManager.releaseHook(hookId)
-      .then((hookType) => {
-        let additionalUrl = "";
-        if (hookType === HookTypes.VERIFY) {
-          additionalUrl = "/email/verify";
-        } else if (hookType === HookTypes.RESET_PASSWORD) {
-          additionalUrl = "/password/confirmed";
-        }
+    try {
+      const hookType = await UserManager.releaseHook(hookId);
+      let additionalUrl = "";
+      if (hookType === USER_HOOK_TYPES.VERIFY) {
+        additionalUrl = "/email/verify";
+      } else if (hookType === USER_HOOK_TYPES.RESET_PASSWORD) {
+        additionalUrl = "/password/confirmed";
+      }
 
-        logger.info(`Hook ${hookId} released.`);
+      logger.info(`Hook ${hookId} released.`);
 
-        // redirect to the frontend
-        response.redirect(`${process.env.FRONTEND_URL}${additionalUrl}`);
-        next();
-      })
-      .catch((err) => {
-        logger.error(err);
-        response.status(500).send("could not releasae hook");
-      });
+      response.redirect(`${process.env.FRONTEND_URL}${additionalUrl}`);
+    } catch (err) {
+      logger.error(err);
+      response.redirect(`${process.env.FRONTEND_URL}/login`);
+    }
   }
 
   static resetPassword(request, response) {
@@ -192,6 +189,29 @@ class AuthenticationController {
         });
     } else {
       response.sendStatus(400);
+    }
+  }
+
+  static async checkEmail(request, response) {
+    if (process.env.DISABLE_EMAIL_CHECK === "true") {
+      return response.status(200).send("Email check is disabled");
+    }
+
+    const { email } = request.body;
+
+    if (!email) {
+      return response.status(400).send("Email is required");
+    }
+
+    try {
+      const user = await UserManager.getUser(email);
+      if (user) {
+        return response.status(409).send("Email already in use");
+      }
+      return response.status(200).send("Email is available");
+    } catch (error) {
+      logger.error(error);
+      return response.status(500).send("Internal server error");
     }
   }
 }

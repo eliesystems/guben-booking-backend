@@ -32,7 +32,7 @@ class DatabaseManager {
       const uri = process.env.DB_URL;
 
       this.dbClient = await mongoose.connect(uri, {
-        authSource: "booking-manager",
+        authSource: "admin",
         dbName: dbName,
       });
 
