@@ -191,7 +191,9 @@ class UserController {
    */
   static async updateUser(request, response) {
     try {
-      const user = request.user;
+      const user = await UserManager.getUser(request.body.id, true);
+
+      const userToRequestUpdate = request.user;
 
       const newInfos = { id: request.body.id };
 
@@ -209,13 +211,13 @@ class UserController {
 
       fields.forEach((field) => {
         if (Object.prototype.hasOwnProperty.call(request.body, field)) {
-          newInfos[field] = request.body[field];
+          user[field] = request.body[field];
         }
       });
 
-      if (await UserPermissions._allowUpdate(newInfos, user.id)) {
-        await UserManager.storeUser(newInfos);
-        logger.info(`updated user ${newInfos.id} by user ${user?.id}`);
+      if (await UserPermissions._allowUpdate(newInfos, userToRequestUpdate.id)) {
+        await UserManager.storeUser(user);
+        logger.info(`updated user ${newInfos.id} by user ${userToRequestUpdate?.id}`);
         response.sendStatus(200);
       } else {
         logger.warn(`User ${user?.id} not allowed to update user`);
