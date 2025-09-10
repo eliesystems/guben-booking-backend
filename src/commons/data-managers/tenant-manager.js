@@ -49,6 +49,20 @@ class TenantManager {
   }
 
   /**
+   * Updates only a single application inside the Tenant
+   */
+  static async updatePaymentApplication(tenantId, accessToken, tokenExpiry) {
+    await TenantModel.updateOne({ id: tenantId, "applications.id": "ePayBL" },
+      {
+        $set: {
+          "applications.$.cachedAccessToken": accessToken,
+          "applications.$.tokenExpiry": tokenExpiry
+        }
+      }
+    );
+  }
+
+  /**
    * Remove a tenant object from the database.
    *
    * @param {string} id The identifier of the tenant

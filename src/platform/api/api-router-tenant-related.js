@@ -225,6 +225,7 @@ router.get("/payments/notify", PaymentController.paymentNotificationGET);
 router.post("/payments/notify", PaymentController.paymentNotificationPOST);
 router.post("/payments/response", PaymentController.paymentResponse);
 router.get("/payments/response", PaymentController.paymentResponse);
+router.get("/payments/responseV2", PaymentController.paymentResponseV2);
 
 // CALENDAR
 // ========
