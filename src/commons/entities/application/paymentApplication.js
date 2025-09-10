@@ -14,6 +14,8 @@ class PaymentApplication extends TenantApplication {
     this.paymentSecret = params.paymentSecret || null;
     this.paymentMode = params.paymentMode || "";
     this.paymentPurposeSuffix = params.paymentPurposeSuffix || "";
+    this.cachedAccessToken = params.cachedAccessToken || "";
+    this.tokenExpiry = params.tokenExpiry || "";
   }
 
   /**
@@ -59,6 +61,8 @@ class PaymentApplication extends TenantApplication {
       paymentSecret: { type: Object, default: null },
       paymentMode: { type: String, default: "" },
       paymentPurposeSuffix: { type: String, default: "" },
+      cachedAccessToken: { type: String, default: "" },
+      tokenExpiry: { type: Number, default: null }
     };
   }
 }

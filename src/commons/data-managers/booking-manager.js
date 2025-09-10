@@ -125,6 +125,19 @@ class BookingManager {
   }
 
   /**
+   * Update the paymentTransactionId
+   */
+  static async updatePaymentTransactionId(bookingId, tenantId, paymentTransactionId) {
+    await BookingModel.updateOne({ id: bookingId, tenantId },
+      {
+        $set: {
+          "paymentTransactionId": paymentTransactionId,
+        }
+      }
+    );
+  }
+
+  /**
    * Remove a booking
    * @param {string} id Booking ID
    * @param {string} tenantId Tenant ID

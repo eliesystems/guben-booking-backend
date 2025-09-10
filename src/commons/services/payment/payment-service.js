@@ -1,5 +1,6 @@
 const { getBooking } = require("../../data-managers/booking-manager");
 const { getTenantApp } = require("../../data-managers/tenant-manager");
+const jwkToPem = require("jwk-to-pem");
 const bunyan = require("bunyan");
 const axios = require("axios");
 const qs = require("qs");
@@ -8,6 +9,7 @@ const BookingManager = require("../../data-managers/booking-manager");
 const ReceiptService = require("./receipt-service");
 const InvoiceService = require("./invoice-service");
 const MailController = require("../../mail-service/mail-controller");
+const Tenant = require("../../entities/tenant/tenant");
 
 const logger = bunyan.createLogger({
   name: "payment-service.js",
@@ -146,6 +148,489 @@ class PaymentService {
     }
 
     return processedBookings;
+  }
+}
+
+class EPayBLPaymentService extends PaymentService {
+  static EPAYBL_SUCCESS_CODE = "PAYED";
+  static OAUTH_SERVER_URL = process.env.OAUTH_SERVER_URL;
+  static PAYMENT_API_BASE_URL = process.env.PAYMENT_API_BASE_URL;
+  static EPAYBL_PUBLIC_KEY = process.env.EPAYBL_PUBLIC_KEY;
+  static EPAYBL_PRIVATE_KEY = process.env.EPAYBL_PRIVATE_KEY;
+
+  constructor(tenantId, bookingIds, options = {}) {
+    super(tenantId, bookingIds, options);
+    this.clientId = null;
+    this.privateKey = null;
+    this.publicKey = null;
+    this.cachedAccessToken = null;
+    this.tokenExpiry = null;
+  }
+
+  async initializeKeys(paymentApp) {
+    this.clientId = paymentApp.paymentMerchantId;
+    this.privateKey = EPayBLPaymentService.EPAYBL_PRIVATE_KEY;
+    this.publicKey = EPayBLPaymentService.EPAYBL_PUBLIC_KEY;
+    this.cachedAccessToken = paymentApp.cachedAccessToken;
+    this.tokenExpiry = paymentApp.tokenExpiry;
+    
+    if (!this.privateKey || !this.publicKey) {
+      throw new Error("ePayBL: Private and public keys must be configured");
+    }
+  }
+
+  createDPoPProofJWT(httpMethod, httpUri, accessToken = null) {
+    const now = Math.floor(Date.now() / 1000);
+    const publicKeyObj = JSON.parse(this.publicKey);
+    
+    const header = {
+      typ: "dpop+jwt",
+      alg: "RS256",
+      jwk: publicKeyObj
+    };
+
+    const payload = {
+      jti: uuidv4(),
+      htm: httpMethod,
+      htu: httpUri,
+      iat: now
+    };
+
+    if (accessToken) {
+      const tokenHash = crypto.createHash('sha256').update(accessToken).digest('base64url');
+      payload.ath = tokenHash;
+    }
+
+    const privateKeyObj = JSON.parse(this.privateKey);
+    
+    const privateKeyPEM = jwkToPem(privateKeyObj, { private: true });
+    
+    return jwt.sign(payload, privateKeyPEM, {
+      algorithm: 'RS256',
+      header: header,
+      noTimestamp: true
+    });
+  }
+
+  createBearerToken() {
+    const now = Math.floor(Date.now() / 1000);
+    const publicKeyObj = JSON.parse(this.publicKey);
+    
+    const header = {
+      alg: "RS256",
+      kid: publicKeyObj.kid
+    };
+
+    const payload = {
+      iss: this.clientId,
+      sub: this.clientId,
+      aud: EPayBLPaymentService.OAUTH_SERVER_URL,
+      exp: now + 60,
+      jti: uuidv4()
+    };
+
+    const privateKeyObj = JSON.parse(this.privateKey);
+    const privateKeyPEM = jwkToPem(privateKeyObj, { private: true });
+
+    return jwt.sign(payload, privateKeyPEM, {
+      algorithm: 'RS256',
+      header: header,
+      noTimestamp: true
+    });
+  }
+
+  async getAccessToken(paymentApp) {
+    if (this.cachedAccessToken && this.tokenExpiry && Math.floor(Date.now() / 1000) < this.tokenExpiry) {
+      return this.cachedAccessToken;
+    }
+
+    await this.initializeKeys(paymentApp);
+    
+    const tokenEndpoint = `${EPayBLPaymentService.OAUTH_SERVER_URL}/token`;
+    
+    // Create DPoP proof for token request
+    const dpopProof = this.createDPoPProofJWT("POST", tokenEndpoint);
+    
+    // Create Bearer token for authentication
+    const bearerToken = this.createBearerToken();
+    
+    const requestBody = qs.stringify({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion: bearerToken
+    });
+
+    const config = {
+      method: "post",
+      url: tokenEndpoint,
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "DPoP": dpopProof
+      },
+      data: requestBody,
+    };
+
+    try {
+      const response = await axios(config);
+      
+      if (response.data?.access_token && response.data?.token_type === "DPoP") {
+        //removing a few seconds for buffer here
+        this.tokenExpiry = Math.floor(Date.now() / 1000) + response.data?.expires_in - 5;
+        this.cachedAccessToken = response.data?.access_token;
+        
+        await Tenant.updatePaymentApplication(this.tenantId, this.cachedAccessToken, this.tokenExpiry);
+
+        return response.data.access_token;
+      } else {
+        throw new Error(`Invalid token response: ${JSON.stringify(response.data)}`);
+      }
+    } catch (error) {
+      logger.error(`ePayBL token request failed:`, error.response?.data || error.message);
+      throw new Error(`ePayBL authentication failed: ${error.response?.data?.error_description || error.message}`);
+    }
+  }
+
+  async createPayment() {
+    if (this.aggregated) {
+      return this.aggregatedPaymentUrl();
+    } else {
+      return this.createSeparatePaymentUrl();
+    }
+  }
+
+  async createSeparatePaymentUrl() {
+    const paymentUrls = [];
+    
+    for (const bookingId of this.bookingIds) {
+      const booking = await getBooking(bookingId, this.tenantId);
+      const paymentApp = await getTenantApp(this.tenantId, "ePayBL");
+      
+      // Get DPoP-bound access token
+      const accessToken = await this.getAccessToken(paymentApp);
+      
+      const originatorId = paymentApp.paymentMerchantId;
+      const endPointId = paymentApp.paymentProjectId;
+      const apiUrl = `${EPayBLPaymentService.PAYMENT_API_BASE_URL}/paymenttransaction/${originatorId}/${endPointId}`;
+      
+      const requestId = booking.id;
+      const amount = (booking.priceEur || 0);
+      const purpose = `${booking.id} - ${paymentApp.paymentPurposeSuffix || ""}`.substring(0, 27);
+      
+      const redirectUrl = `${process.env.BACKEND_URL}/api/${this.tenantId}/payments/responseV2?ids=${requestId}&tenant=${this.tenantId}&paymentMethod=${paymentApp.id}&aggregated=false`;
+      
+      const paymentRequest = {
+        requestId: requestId,
+        requestTimestamp: new Date().toISOString(),
+        currency: "EUR",
+        grossAmount: amount,
+        purpose: this.sanitizePurpose(purpose),
+        description: purpose,
+        redirectUrl: redirectUrl,
+        items: [
+          {
+            id: "01",
+            reference: booking.bookableItems[0].bookableId,
+            taxRate: booking.bookableItems[0]._bookableUsed.priceValueAddedTax,
+            quantity: booking.bookableItems[0].amount,
+            totalNetAmount: booking.bookableItems[0].userPriceEur * booking.bookableItems[0].amount,
+            totalTaxAmount: (booking.bookableItems[0].userGrossPriceEur - booking.bookableItems[0].userPriceEur) * booking.bookableItems[0].amount,
+            singleNetAmount: booking.bookableItems[0].userPriceEur,
+            singleTaxAmount: booking.bookableItems[0].userGrossPriceEur - booking.bookableItems[0].userPriceEur,
+          },
+        ],
+        requestor: {
+          name: this.getLastName(booking.name),
+          firstName: this.getFirstName(booking.name),
+          isOrganization: booking.company ? true : false,
+          ...(booking.company && { organizationName: booking.company }),
+          address: {
+            street: this.getStreetName(booking.street) || "",
+            houseNumber: this.getHouseNumber(booking.street) || "",
+            postalCode: booking.zipCode || "",
+            city: booking.location || "",
+          }
+        }
+      };
+
+      // Create DPoP proof for this API call
+      const dpopProof = this.createDPoPProofJWT("POST", apiUrl, accessToken);
+
+      const config = {
+        method: "post",
+        url: apiUrl,
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+          "Authorization": `DPoP ${accessToken}`,
+          "DPoP": dpopProof
+        },
+        data: paymentRequest,
+      };
+
+      try {
+        const response = await axios(config);
+
+        if (response.data?.paymentInformation?.transactionUrl) {
+          logger.info(`ePayBL Payment URL requested for booking ${requestId}: ${response.data.paymentInformation.transactionUrl}`);
+
+          await BookingManager.updatePaymentTransactionId(booking.id, this.tenantId, response.data.paymentInformation.transactionId);
+
+          paymentUrls.push({ 
+            bookingId,
+            url: response.data.paymentInformation.transactionUrl,
+            transactionId: response.data.paymentInformation.transactionId
+          });
+        } else {
+          logger.warn("ePayBL: could not get payment url.", response.data);
+          throw new Error(`ePayBL: could not get payment url. Response: ${JSON.stringify(response.data)}`);
+        }
+      } catch (error) {
+        logger.error(`ePayBL payment URL creation failed for booking ${requestId}:`, error.response?.data || error.message);
+        throw new Error(`ePayBL payment creation failed: ${error.response?.data?.message || error.message}`);
+      }
+    }
+    return paymentUrls;
+  }
+
+  async aggregatedPaymentUrl() {
+    const bookings = await BookingManager.getBookings(
+      this.tenantId,
+      this.bookingIds,
+    );
+    const paymentApp = await getTenantApp(this.tenantId, "ePayBL");
+    
+    // Get DPoP-bound access token
+    const accessToken = await this.getAccessToken(paymentApp);
+    
+    const originatorId = paymentApp.paymentMerchantId;
+    const endPointId = paymentApp.paymentProjectId;
+    const apiUrl = `${EPayBLPaymentService.PAYMENT_API_BASE_URL}/paymenttransaction/${originatorId}/${endPointId}`;
+    
+    const requestId = `${this.bookingIds.join(",")}`;
+    const amount = bookings.reduce((acc, booking) => {
+      return acc + (booking.priceEur || 0);
+    }, 0);
+    const purpose = `${this.bookingIds.join(",")} - ${
+      paymentApp.paymentPurposeSuffix || ""
+    }`;
+
+    const redirectUrl = `${process.env.BACKEND_URL}/api/${this.tenantId}/payments/responseV2?ids=${requestId}&tenant=${this.tenantId}&paymentMethod=${paymentApp.id}&aggregated=true`;
+
+    const items = bookings.map((booking, index) => ({
+      id: String(index + 1).padStart(2, '0'),
+      reference: booking.bookableItems[index].bookableId,
+      taxRate: booking.bookableItems[index]._bookableUsed.priceValueAddedTax,
+      quantity: booking.bookableItems[index].amount,
+      totalNetAmount: booking.bookableItems[index].userPriceEur * booking.bookableItems[index].amount,
+      totalTaxAmount: (booking.bookableItems[index].userGrossPriceEur - booking.bookableItems[index].userPriceEur) * booking.bookableItems[index].amount,
+      singleNetAmount: booking.bookableItems[index].userPriceEur,
+      singleTaxAmount: booking.bookableItems[index].userGrossPriceEur - booking.bookableItems[index].userPriceEur,
+    }));
+
+    const paymentRequest = {
+      requestId: uuidv4(),
+      requestTimestamp: new Date().toISOString(),
+      currency: "EUR",
+      grossAmount: amount,
+      purpose: this.sanitizePurpose(purpose),
+      description: this.sanitizeDescription(requestId),
+      redirectUrl: redirectUrl,
+      items: items,
+      requestor: {
+        name: this.getLastName(bookings[0]?.name) || "",
+        firstName: this.getFirstName(bookings[0]?.name) || "",
+        isOrganization: bookings[0]?.company ? true : false,
+        ...(bookings[0]?.company && { organizationName: bookings[0]?.company }),
+        address: {
+          street: this.getStreetName(bookings[0]?.street) || "",
+          houseNumber: this.getHouseNumber(bookings[0]?.street) || "",
+          postalCode: bookings[0]?.zipCode || "",
+          city: bookings[0]?.location || "",
+        }
+      }
+    };
+
+    // Create DPoP proof for this API call
+    const dpopProof = this.createDPoPProofJWT("POST", apiUrl, accessToken);
+
+    const config = {
+      method: "post",
+      url: apiUrl,
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Authorization": `DPoP ${accessToken}`,
+        "DPoP": dpopProof
+      },
+      data: paymentRequest,
+    };
+
+    try {
+      const response = await axios(config);
+
+      if (response.data?.paymentInformation?.transactionUrl) {
+        logger.info(`ePayBL Payment URL requested for bookings ${requestId}: ${response.data.paymentInformation.transactionUrl}`);
+        return [{ 
+          bookingIds: this.bookingIds, 
+          url: response.data.paymentInformation.transactionUrl,
+          transactionId: response.data.paymentInformation.transactionId
+        }];
+      } else {
+        logger.warn("ePayBL: could not get payment url.", response.data);
+        throw new Error(`ePayBL: could not get payment url. Response: ${JSON.stringify(response.data)}`);
+      }
+    } catch (error) {
+      logger.error(`ePayBL aggregated payment URL creation failed for bookings ${requestId}:`, error.response?.data || error.message);
+      throw new Error(`ePayBL payment creation failed: ${error.response?.data?.message || error.message}`);
+    }
+  }
+
+  getStreetName(streetWithNumber) {
+    const match = streetWithNumber.match(/^(.+?)\s+\d+.*$/);
+    return match ? match[1].trim() : streetWithNumber;
+  }
+
+  getHouseNumber(streetWithNumber) {
+    const match = streetWithNumber.match(/\s+(\d+.*)$/);
+    return match ? match[1].trim() : "";
+  }
+
+  getLastName(fullName) {
+    const parts = fullName.trim().split(' ');
+    return parts[parts.length - 1];
+  }
+
+  getFirstName(fullName) {
+    const parts = fullName.trim().split(' ');
+    return parts.slice(0, -1).join(' ');
+  }
+
+  sanitizePurpose(purpose) {
+    if (!purpose) return "";
+
+    purpose = purpose
+      .replace(/ä/g, "ae")
+      .replace(/ö/g, "oe")
+      .replace(/ü/g, "ue")
+      .replace(/Ä/g, "Ae")
+      .replace(/Ö/g, "Oe")
+      .replace(/Ü/g, "Ue")
+      .replace(/ß/g, "ss");
+
+    return purpose
+      .replace(/[^\w\d\s-]/g, "")
+      .substring(0, 27)
+      .trim();
+  }
+
+  sanitizeDescription(description) {
+    if (!description) return "";
+
+    return description
+      .substring(0, 250)
+      .trim();
+  }
+
+  async getPaymentStatus(transactionId) {
+    const paymentApp = await getTenantApp(this.tenantId, "ePayBL");
+    const accessToken = await this.getAccessToken(paymentApp);
+    
+    const originatorId = paymentApp.paymentMerchantId;
+    const endPointId = paymentApp.paymentProjectId;
+    const statusUrl = `${EPayBLPaymentService.PAYMENT_API_BASE_URL}/paymenttransaction/${originatorId}/${endPointId}/${transactionId}`;
+    
+    // Create DPoP proof for GET request
+    const dpopProof = this.createDPoPProofJWT("GET", statusUrl, accessToken);
+    
+    const config = {
+      method: "get",
+      url: statusUrl,
+      headers: {
+        "Authorization": `DPoP ${accessToken}`,
+        "Accept": "application/json",
+        "DPoP": dpopProof
+      }
+    };
+
+    try {
+      const response = await axios(config);
+
+      const paymentInformation = response.data?.paymentInformation;
+      const paymentMethod = paymentInformation.paymentMethod;
+      const status = paymentInformation.status;
+
+      if (status === EPayBLPaymentService.EPAYBL_SUCCESS_CODE) {
+        logger.info(`${this.tenantId} -- ePayBL responds with status ${EPayBLPaymentService.EPAYBL_SUCCESS_CODE} / successfully paid for bookings ${this.bookingIds}.`);
+
+        await this.handleSuccessfulPayment({
+          bookingIds: this.bookingIds,
+          tenantId: this.tenantId,
+          paymentMethod: paymentMethod || "OTHER",
+        });
+
+        logger.info(`${this.tenantId} -- bookings ${this.bookingIds} successfully paid via ePayBL and updated.`);
+      } else {
+        logger.warn(`${this.tenantId} -- ePayBL payment failed for bookings ${this.bookingIds}. Status: ${status}`);
+      }
+    } catch (error) {
+      logger.error(`ePayBL status check failed for transaction ${transactionId}:`, error.response?.data || error.message);
+      throw error;
+    }
+  }
+  
+  async paymentRequest() {
+    if (this.aggregated) {
+      return this.aggregatedPaymentLink();
+    } else {
+      return this.separatePaymentLink();
+    }
+  }
+
+  async separatePaymentLink() {
+    try {
+      for (const bookingId of this.bookingIds) {
+        const booking = await BookingManager.getBooking(
+          bookingId,
+          this.tenantId
+        );
+
+        await MailController.sendPaymentLinkAfterBookingApproval(
+          booking.mail,
+          bookingId,
+          this.tenantId,
+        );
+      }
+    } catch (error) {
+      logger.error(`EPayBL separate payment Link error`, error);
+      throw error;
+    }
+  }
+
+  async aggregatedPaymentLink() {
+    try {
+      const bookings = await BookingManager.getBookings(
+        this.tenantId,
+        this.bookingIds,
+      );
+
+      await MailController.sendPaymentLinkAfterBookingApproval(
+        bookings[0].mail,
+        this.bookingIds,
+        this.tenantId,
+        true,
+      );
+    } catch (error) {
+      logger.error(`ePayBL aggregated payment link error:`, error);
+      throw error;
+    }
+  }
+
+  async handleSuccessfulPayment({ bookingIds, tenantId, paymentMethod }) {
+    await super.handleSuccessfulPayment({
+      bookingIds,
+      tenantId,
+      paymentMethod,
+    });
   }
 }
 
@@ -899,6 +1384,7 @@ class InvoicePaymentService extends PaymentService {
 }
 
 module.exports = {
+  EPayBLPaymentService,
   GiroCockpitPaymentService,
   PmPaymentService,
   InvoicePaymentService,

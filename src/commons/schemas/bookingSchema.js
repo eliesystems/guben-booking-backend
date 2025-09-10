@@ -35,6 +35,7 @@ const bookingSchemaDefinition = {
   timeEnd: { type: Double, required: false },
   vatIncludedEur: { type: Number, default: 0 },
   zipCode: { type: String, default: "" },
+  paymentTransactionId: { type: String, default: "" },
   _couponUsed: { type: Object, default: {} },
   hooks: { type: [bookingHookSchemaDefinition], default: [] },
 };
