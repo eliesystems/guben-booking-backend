@@ -1,4 +1,5 @@
 const {
+  EPayBLPaymentService,
   GiroCockpitPaymentService,
   PmPaymentService,
   InvoicePaymentService,
@@ -13,6 +14,7 @@ class PaymentUtils {
     options,
   ) {
     const paymentProviders = {
+      ePayBL: EPayBLPaymentService,
       giroCockpit: GiroCockpitPaymentService,
       pmPayment: PmPaymentService,
       invoice: InvoicePaymentService,
