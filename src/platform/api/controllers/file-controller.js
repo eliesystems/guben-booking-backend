@@ -36,14 +36,18 @@ class FileController {
 
       let protectedFiles = [];
       if (request.isAuthenticated() && includeProtectedBool) {
-        const protectedFilesData = await NextcloudManager.getFiles(
-          tenant,
-          PROTECTED_PATH,
-        );
-        protectedFiles = protectedFilesData.map((file) => ({
-          ...file,
-          accessLevel: "protected",
-        }));
+        try {
+          const protectedFilesData = await NextcloudManager.getFiles(
+            tenant,
+            PROTECTED_PATH,
+          );
+          protectedFiles = protectedFilesData.map((file) => ({
+            ...file,
+            accessLevel: "protected",
+          }));
+        } catch (error) {
+          console.warn(`There is no protected Folder for Tenant:`, tenant, `, error:`, error);
+        }
       }
 
       const allFiles = [...publicFiles, ...protectedFiles];
