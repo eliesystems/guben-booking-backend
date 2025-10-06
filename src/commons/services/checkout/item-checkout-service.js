@@ -312,7 +312,7 @@ class ItemCheckoutService {
     const bookingDate = formatISO(new Date(start)).split("T")[0];
 
     const holidaysPriceCategories = priceCategories.filter(
-      (pc) => pc.holidays.length > 0,
+      (pc) => pc.holidays?.length > 0,
     );
 
     const filterdHolidayPriceCategories = [];
