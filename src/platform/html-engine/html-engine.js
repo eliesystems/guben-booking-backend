@@ -492,31 +492,51 @@ class HtmlEngine {
 
     htmlOutput += '<ul class="schedule-list">';
 
+
+    // #TODO fix this logic
+
     event.schedules.forEach((schedule) => {
       htmlOutput += '<li class="schedule-item">';
 
-      htmlOutput += `<div class="schedule-date">${Intl.DateTimeFormat("de-DE", {
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric",
-      }).format(new Date(schedule.date))} ${schedule.time || ""}&nbsp;</div>`;
-      htmlOutput += `<div class="schedule-description">${
-        schedule.description || ""
-      }</div>`;
+      try {
+        htmlOutput += `<div class="schedule-date">${Intl.DateTimeFormat("de-DE", {
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+        }).format(new Date(schedule.date))} ${schedule.time || ""}&nbsp;</div>`;
+        htmlOutput += `<div class="schedule-description">${
+          schedule.description || ""
+        }</div>`;
+      } catch (err) {
+        console.log('error rendering schedules for event', err);
+        console.log('event', event);
+        console.log('schedules', event.schedules);
+        console.log('schedule', schedule);
+      } finally {
+      }
 
       if (schedule.schedules && schedule.schedules.length > 0) {
-        htmlOutput += '<ul class="sub-schedule-list">';
-        schedule.schedules.forEach((subSchedule) => {
-          htmlOutput += '<li class="sub-schedule-item">';
-          htmlOutput += `<div class="sub-schedule-date">${
-            subSchedule.time || ""
-          }</div>`;
-          htmlOutput += `<div class="sub-schedule-description">${
-            subSchedule.description || ""
-          }</div>`;
-          htmlOutput += "</li>";
-        });
-        htmlOutput += "</ul>";
+        try {
+
+          htmlOutput += '<ul class="sub-schedule-list">';
+          schedule.schedules.forEach((subSchedule) => {
+            htmlOutput += '<li class="sub-schedule-item">';
+            htmlOutput += `<div class="sub-schedule-date">${
+              subSchedule.time || ""
+            }</div>`;
+            htmlOutput += `<div class="sub-schedule-description">${
+              subSchedule.description || ""
+            }</div>`;
+            htmlOutput += "</li>";
+          });
+          htmlOutput += "</ul>";
+        } catch (err) {
+          console.log('error rendering schedule.schedules for event', err);
+          console.log('event', event);
+          console.log('schedules', schedule.schedules);
+          console.log('schedule', schedule);
+
+        }
       }
       htmlOutput += "</li>";
     });
