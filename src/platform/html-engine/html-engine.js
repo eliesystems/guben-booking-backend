@@ -399,7 +399,7 @@ class HtmlEngine {
       ? `<div class="street">${event.eventAddress.street || ""}</div>`
       : "";
     htmlOutput += event.eventAddress.houseNumber
-      ? `<div class houseNumber>${event.eventAddress.houseNumber || ""}</div>`
+      ? `<div class="houseNumber">${event.eventAddress.houseNumber || ""}</div>`
       : "";
     htmlOutput += event.eventAddress.zip
       ? `<div class="zip">${event.eventAddress.zip || ""}</div>`
